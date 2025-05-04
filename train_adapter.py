@@ -27,7 +27,7 @@ class Llama4AdapterDataset(Dataset):
 class Llama4AdapterTrainer(pl.LightningModule):
     """PyTorch Lightning module for training the adapter"""
     def __init__(self, 
-                 input_dim: int = 8192, 
+                 input_dim: int = 5120, 
                  output_dim: int = 4096,
                  hidden_dim: Optional[int] = None,
                  learning_rate: float = 5e-4,
@@ -103,6 +103,10 @@ def main():
     parser.add_argument("--output_dir", type=str, default="checkpoints", help="Output directory")
     parser.add_argument("--cosine_weight", type=float, default=0.5, 
                         help="Weight for cosine similarity loss (0-1)")
+    parser.add_argument("--input_dim", type=int, default=None,
+                        help="Input dimension (if not specified, will detect from data)")
+    parser.add_argument("--output_dim", type=int, default=None,
+                        help="Output dimension (if not specified, will detect from data)")
     args = parser.parse_args()
     
     # Create output directory
@@ -132,8 +136,16 @@ def main():
         pin_memory=True
     )
     
+    # Load a sample to determine dimensions
+    sample_data = torch.load(args.pairs)
+    input_dim = args.input_dim or sample_data['llama4_states'].shape[1]
+    output_dim = args.output_dim or sample_data['csm_inputs'].shape[1]
+    print(f"Detected input_dim={input_dim}, output_dim={output_dim} from training data")
+    
     # Create model
     model = Llama4AdapterTrainer(
+        input_dim=input_dim,
+        output_dim=output_dim,
         learning_rate=args.lr,
         weight_decay=args.weight_decay,
         cosine_weight=args.cosine_weight

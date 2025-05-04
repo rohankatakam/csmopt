@@ -18,14 +18,26 @@ def main():
     parser.add_argument("--output", type=str, default="adapter.ckpt", help="Output adapter path")
     parser.add_argument("--input_dim", type=int, default=8192, help="Input dimension (Llama 4)")
     parser.add_argument("--output_dim", type=int, default=4096, help="Output dimension (CSM)")
+    parser.add_argument("--dtype", type=str, default="bfloat16", help="Data type for adapter (float32, float16, bfloat16)")
     args = parser.parse_args()
     
     # Create adapter with random weights
-    print(f"Creating placeholder adapter with input_dim={args.input_dim}, output_dim={args.output_dim}")
+    print(f"Creating placeholder adapter with input_dim={args.input_dim}, output_dim={args.output_dim}, dtype={args.dtype}")
     adapter = Llama4Adapter(
         input_dim=args.input_dim,
         output_dim=args.output_dim
     )
+    
+    # Convert adapter to specified dtype
+    if args.dtype == "bfloat16":
+        adapter = adapter.to(torch.bfloat16)
+        print("Converted adapter to BFloat16 dtype")
+    elif args.dtype == "float16":
+        adapter = adapter.to(torch.float16)
+        print("Converted adapter to Float16 dtype")
+    elif args.dtype == "float32":
+        adapter = adapter.to(torch.float32)
+        print("Converted adapter to Float32 dtype")
     
     # Save adapter
     print(f"Saving adapter to {args.output}")

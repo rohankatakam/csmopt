@@ -1,7 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import logging
 from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 class Llama4Adapter(nn.Module):
     """
@@ -11,16 +14,18 @@ class Llama4Adapter(nn.Module):
     def __init__(self, 
                  input_dim: int = 5120, 
                  output_dim: int = 4096, 
-                 hidden_dim: Optional[int] = None):
+                 hidden_dim: Optional[int] = None,
+                 dtype: torch.dtype = torch.float32):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.hidden_dim = hidden_dim or output_dim
+        self.dtype = dtype
         
         # Two-layer MLP with GELU activation
-        self.down_proj = nn.Linear(input_dim, output_dim)
+        self.down_proj = nn.Linear(input_dim, output_dim, dtype=dtype)
         self.activation = nn.GELU()
-        self.out_proj = nn.Linear(output_dim, output_dim)
+        self.out_proj = nn.Linear(output_dim, output_dim, dtype=dtype)
         
         # Initialize weights for better convergence
         nn.init.xavier_uniform_(self.down_proj.weight)
@@ -38,6 +43,11 @@ class Llama4Adapter(nn.Module):
         Returns:
             Transformed tensor of shape [..., output_dim]
         """
+        # Ensure adapter weights match input dtype
+        if x.dtype != self.down_proj.weight.dtype:
+            logger.info(f"Converting adapter weights from {self.down_proj.weight.dtype} to {x.dtype}")
+            self.to(x.dtype)
+
         x = self.down_proj(x)
         x = self.activation(x)
         x = self.out_proj(x)

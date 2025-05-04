@@ -41,6 +41,9 @@ def generate_speech(
 ):
     """Generate speech using a reliable TTS model."""
     
+    # Import modules needed in this function
+    import os
+    
     # Set token in environment if provided
     if token:
         os.environ["HUGGING_FACE_HUB_TOKEN"] = token
@@ -57,8 +60,22 @@ def generate_speech(
         model = SpeechT5ForTextToSpeech.from_pretrained(model_name).to(device)
         vocoder = SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan").to(device)
         
-        # Load speaker embeddings
-        embeddings_dataset = torch.load("https://huggingface.co/datasets/Matthijs/cmu-arctic-xvectors/resolve/main/xvector_tsv.pt")
+        # Load speaker embeddings (download first if needed)
+        import requests
+        import tempfile
+        import os.path
+        
+        embeddings_path = os.path.join(tempfile.gettempdir(), "xvector_tsv.pt")
+        
+        if not os.path.exists(embeddings_path):
+            logger.info("Downloading speaker embeddings...")
+            url = "https://huggingface.co/datasets/Matthijs/cmu-arctic-xvectors/resolve/main/xvector_tsv.pt"
+            response = requests.get(url)
+            with open(embeddings_path, "wb") as f:
+                f.write(response.content)
+            logger.info(f"Downloaded embeddings to {embeddings_path}")
+            
+        embeddings_dataset = torch.load(embeddings_path)
         speaker_embeddings = torch.tensor(embeddings_dataset[7306]["xvector"]).unsqueeze(0).to(device)
         
         # Process text input

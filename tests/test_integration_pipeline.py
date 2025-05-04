@@ -283,22 +283,35 @@ def csm_integration_test(
                 def simulate_csm_processing(hidden_states):
                     # Apply a random transformation to simulate CSM processing
                     # This is NOT a real CSM model, just a placeholder
+                    
+                    # Convert hidden states to float32 to avoid dtype mismatches
+                    # Use cpu to ensure compatibility
+                    hidden_states = hidden_states.to(dtype=torch.float32, device='cpu')
+                    
                     batch_size, seq_len, dim = hidden_states.shape
                     
                     # Simulate some processing time
-                    time.sleep(0.5)
+                    time.sleep(0.1)
                     
                     # Create a simulated audio output (1 second at 24kHz)
                     audio_length = 24000
-                    simulated_audio = torch.zeros(1, audio_length)
+                    simulated_audio = torch.zeros(1, audio_length, dtype=torch.float32)
                     
                     # Add some structure based on the hidden states
                     for i in range(min(seq_len, 10)):
-                        freq = float(F.softmax(hidden_states[0, i, :100], dim=0).argmax() + 1) * 10
-                        amp = float(torch.sigmoid(hidden_states[0, i, 100]).item())
+                        # Extract features and ensure float32 dtype for all operations
+                        hidden_slice = hidden_states[0, i, :100].float()
+                        feature_val = hidden_states[0, i, 100].float().item()
                         
-                        t = torch.linspace(0, 1, audio_length)
-                        simulated_audio += amp * torch.sin(2 * 3.14159 * freq * t).unsqueeze(0)
+                        # Compute frequency and amplitude
+                        softmax_values = F.softmax(hidden_slice, dim=0).float()
+                        freq = float(softmax_values.argmax().item() + 1) * 10
+                        amp = float(torch.sigmoid(torch.tensor(feature_val, dtype=torch.float32)).item())
+                        
+                        # Generate sine wave
+                        t = torch.linspace(0, 1, audio_length, dtype=torch.float32)
+                        wave = torch.sin(2 * 3.14159 * freq * t).unsqueeze(0).float()
+                        simulated_audio += (amp * wave)
                     
                     # Normalize
                     simulated_audio = simulated_audio / simulated_audio.abs().max()
