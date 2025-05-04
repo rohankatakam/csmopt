@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This document outlines our approach to integrating Llama 4's Mixture of Experts (MoE) architecture with Sesame AI's Conversational Speech Model (CSM). The main challenge is the mismatch between Llama 4's 8,192-dimension output vectors and Sesame's 4,096-dimension input requirement. Our solution implements a learned transformation layer that maps between these embedding spaces while preserving the semantic information.
+This document outlines our approach to integrating Llama 4's Mixture of Experts (MoE) architecture with Sesame AI's Conversational Speech Model (CSM). The main challenge is the mismatch between Llama 4's 5,120-dimension output vectors and Sesame's 4,096-dimension input requirement. Our solution implements a learned transformation layer that maps between these embedding spaces while preserving the semantic information.
 
 ## 1. Background and Architecture
 
@@ -15,7 +15,7 @@ Llama 4 introduces a significant architectural change from Llama 3:
 - **MoE Routing**: Only activates a fraction of parameters per token
 - **Multimodality**: Uses an early fusion approach that integrates text and vision
 - **Context Window**: Up to 10M tokens (Scout)
-- **Hidden State Dimension**: 8,192 (compared to 4,096 in Llama 3)
+- **Hidden State Dimension**: 5,120 (compared to 4,096 in Llama 3)
 
 ### Sesame CSM Architecture
 
@@ -29,7 +29,7 @@ From our codebase analysis:
 
 ### Integration Challenge
 
-The fundamental mismatch is that Llama 4's final hidden states are 8,192-dimensional, while our current CSM decoder expects 4,096-dimensional vectors. This dimensional mismatch must be resolved without losing the semantic quality of Llama 4's representations.
+The fundamental mismatch is that Llama 4's final hidden states are 5,120-dimensional, while our current CSM decoder expects 4,096-dimensional vectors. This dimensional mismatch must be resolved without losing the semantic quality of Llama 4's representations.
 
 ## 2. Solution Design
 
@@ -37,12 +37,12 @@ The fundamental mismatch is that Llama 4's final hidden states are 8,192-dimensi
 
 We'll implement a learned transformation layer (`Llama4Adapter`) with the following properties:
 
-- **Input**: 8,192-dimension vectors from Llama 4
+- **Input**: 5,120-dimension vectors from Llama 4
 - **Output**: 4,096-dimension vectors for Sesame CSM
 - **Architecture**: Two-layer MLP with GELU activation
-- **Design**: `Linear(8192→4096) → GELU → Linear(4096→4096)`
-- **Parameters**: ~4M parameters (~16MB on disk)
-- **Training**: Supervised learning with cosine similarity loss
+- **Design**: `Linear(5120→4096) → GELU → Linear(4096→4096)`
+- **Parameters**: ~38M parameters (~145MB on disk)
+- **Training**: Supervised learning with combined MSE and cosine similarity loss
 
 ### 2.2 Implementation Plan
 
@@ -54,7 +54,7 @@ We'll implement a learned transformation layer (`Llama4Adapter`) with the follow
    - Create loader in `models.py` with `output_hidden_states=True` flag
 
 2. **Verify Hidden State Access**
-   - Confirm we can extract the final hidden state (8,192-d)
+   - Confirm we can extract the final hidden state (5,120-d)
    - Test with a simple prompt and validate dimensions
 
 #### Phase 2: Training Data Generation (2 hours)
@@ -141,11 +141,11 @@ from typing import Dict, Any, Optional
 
 class Llama4Adapter(nn.Module):
     """
-    Adapter to transform Llama 4's 8192-d hidden states to 
+    Adapter to transform Llama 4's 5120-d hidden states to 
     match Sesame CSM's expected 4096-d input format.
     """
     def __init__(self, 
-                 input_dim: int = 8192, 
+                 input_dim: int = 5120, 
                  output_dim: int = 4096, 
                  hidden_dim: Optional[int] = None):
         super().__init__()
@@ -250,7 +250,7 @@ class Llama4AdapterDataset(Dataset):
 class Llama4AdapterTrainer(pl.LightningModule):
     """PyTorch Lightning module for training the adapter"""
     def __init__(self, 
-                 input_dim: int = 8192, 
+                 input_dim: int = 5120, 
                  output_dim: int = 4096,
                  hidden_dim: Optional[int] = None,
                  learning_rate: float = 5e-4,
