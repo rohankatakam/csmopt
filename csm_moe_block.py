@@ -13,6 +13,7 @@ import time
 
 from models import Model, ModelArgs
 from optimized_moe import OptimizedMoEBlockWrapper, VectorizedMoELayer
+from moe_precision import convert_moe_model_to_mixed_precision
 
 
 class CSMMoEModel(nn.Module):
@@ -25,7 +26,9 @@ class CSMMoEModel(nn.Module):
                  moe_block_indices: List[int] = None,
                  num_experts: int = 8,
                  top_k: int = 2,
-                 use_vectorized: bool = True):
+                 use_vectorized: bool = True,
+                 precision: str = "fp32",
+                 routing_algorithm: str = "top_k"):
         """
         Initialize the CSM MoE model with vectorized implementation.
         
@@ -45,6 +48,8 @@ class CSMMoEModel(nn.Module):
         self.num_experts = num_experts
         self.top_k = top_k
         self.use_vectorized = use_vectorized
+        self.precision = precision
+        self.routing_algorithm = routing_algorithm
         
         # Variables to track MoE blocks
         self.moe_blocks = {}
@@ -68,10 +73,12 @@ class CSMMoEModel(nn.Module):
                 # Apply vectorized MoE to specified decoder blocks
                 self.moe_blocks = self.patch_llama_with_vectorized_moe(
                     embed_dim=embed_dim,
-                    mlp_dim=mlp_dim
+                    mlp_dim=mlp_dim,
+                    precision=self.precision,
+                    routing_algorithm=self.routing_algorithm
                 )
 
-    def patch_llama_with_vectorized_moe(self, embed_dim, mlp_dim):
+    def patch_llama_with_vectorized_moe(self, embed_dim, mlp_dim, precision="fp32", routing_algorithm="top_k"):
         """
         Apply vectorized MoE to the specified decoder blocks.
         
@@ -102,7 +109,9 @@ class CSMMoEModel(nn.Module):
                     hidden_dim=embed_dim,
                     mlp_dim=mlp_dim,
                     num_experts=self.num_experts,
-                    top_k=self.top_k
+                    top_k=self.top_k,
+                    precision=precision,
+                    routing_algorithm=routing_algorithm
                 )
                 
                 # Replace the original block
@@ -201,7 +210,9 @@ def create_moe_csm_model(
     moe_block_indices: List[int] = None,
     num_experts: int = 8,
     top_k: int = 2,
-    use_vectorized: bool = True
+    use_vectorized: bool = True,
+    precision: str = "fp32",
+    routing_algorithm: str = "top_k"
 ) -> CSMMoEModel:
     """
     Create a CSM model with vectorized MoE routing.
@@ -216,10 +227,20 @@ def create_moe_csm_model(
     Returns:
         moe_model: CSM model with vectorized MoE routing
     """
-    return CSMMoEModel(
+    # Create MoE model with specified precision and routing algorithm
+    moe_model = CSMMoEModel(
         original_model=original_model,
         moe_block_indices=moe_block_indices,
         num_experts=num_experts,
         top_k=top_k,
-        use_vectorized=use_vectorized
+        use_vectorized=use_vectorized,
+        precision=precision,
+        routing_algorithm=routing_algorithm
     )
+    
+    # Apply mixed precision settings if needed
+    if precision != "fp32":
+        print(f"Converting model to {precision} precision")
+        moe_model, _ = convert_moe_model_to_mixed_precision(moe_model, precision)
+    
+    return moe_model

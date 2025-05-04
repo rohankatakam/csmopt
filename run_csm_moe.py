@@ -4,6 +4,11 @@ Test script for running CSM with optimized vectorized MoE routing.
 This script demonstrates how to use the optimized vectorized MoE routing mechanism
 with the CSM model for inference on a local .wav file. This implementation
 focuses on memory efficiency and performance improvement.
+
+Phase 2 Optimizations:
+- Mixed precision support (fp16, bf16) for faster inference
+- Optimized routing algorithm for better expert utilization
+- Support for experimenting with different numbers of experts
 """
 
 import os
@@ -11,10 +16,13 @@ import torch
 import torchaudio
 import time
 import argparse
+import numpy as np
+import matplotlib.pyplot as plt
 from huggingface_hub import hf_hub_download
 from generator import load_csm_1b, Segment
 from csm_moe_block import create_moe_csm_model
 from dataclasses import dataclass
+from moe_precision import convert_moe_model_to_mixed_precision
 
 # Disable Triton compilation
 os.environ["NO_TORCH_COMPILE"] = "1"
@@ -67,6 +75,44 @@ def prepare_prompt(text: str, speaker: int, audio_path: str, sample_rate: int) -
     audio_tensor = load_prompt_audio(audio_path, sample_rate)
     return Segment(text=text, speaker=speaker, audio=audio_tensor)
 
+def save_expert_usage_plot(stats, title, filename):
+    """Save a visualization of expert usage statistics."""
+    if not stats:
+        return
+    
+    # Extract expert activation percentages
+    expert_blocks = list(stats.keys())
+    
+    for block_name in expert_blocks:
+        if 'expert_percentages' not in stats[block_name]:
+            continue
+            
+        percentages = stats[block_name]['expert_percentages']
+        expert_ids = list(range(len(percentages)))
+        
+        plt.figure(figsize=(10, 6))
+        plt.bar(expert_ids, percentages)
+        plt.xlabel('Expert ID')
+        plt.ylabel('Usage Percentage (%)')
+        plt.title(f'{title} - {block_name}')
+        plt.grid(True, alpha=0.3)
+        
+        # Add utilization metrics
+        mean_util = np.mean(percentages)
+        std_util = np.std(percentages)
+        min_util = np.min(percentages)
+        max_util = np.max(percentages)
+        
+        plt.figtext(0.5, 0.01, 
+                   f'Mean: {mean_util:.2f}%, Std: {std_util:.2f}%, Min: {min_util:.2f}%, Max: {max_util:.2f}%',
+                   ha='center', fontsize=10)
+        
+        # Save to a separate file for each block
+        block_filename = filename.replace('.png', f'_{block_name}.png')
+        plt.savefig(block_filename)
+        plt.close()
+        print(f"Expert usage visualization saved to {block_filename}")
+
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Run CSM with optimized vectorized MoE routing")
@@ -76,12 +122,18 @@ def main():
                         help="Number of experts in MoE layers (default: 8)")
     parser.add_argument("--top_k", type=int, default=2,
                         help="Number of experts to route to (default: 2)")
+    parser.add_argument("--precision", type=str, choices=["fp32", "fp16", "bf16"], default="fp32",
+                        help="Precision to use for computation (fp32, fp16, bf16)")
+    parser.add_argument("--routing_algorithm", type=str, choices=["top_k", "balanced", "expert_choice"], default="top_k",
+                       help="Routing algorithm to use (top_k, balanced, expert_choice)")
     parser.add_argument("--disable_moe", action="store_true",
                         help="Disable MoE routing for comparison")
     parser.add_argument("--benchmark", action="store_true",
                         help="Run in benchmark mode to compare performance")
     parser.add_argument("--memory_profile", action="store_true",
                         help="Track memory usage during generation")
+    parser.add_argument("--visualize_experts", action="store_true",
+                       help="Generate visualization of expert usage")
     parser.add_argument("--output", type=str, default="moe_conversation.wav",
                         help="Output wav file name (default: moe_conversation.wav)")
     args = parser.parse_args()
@@ -99,16 +151,32 @@ def main():
     
     # Create optimized vectorized MoE version
     print("Setting up optimized vectorized MoE routing...")
-    moe_block_indices = [int(idx) for idx in args.moe_blocks.split(",")]
-    print(f"Applying vectorized MoE to decoder blocks: {moe_block_indices}")
+    block_indices = [int(idx) for idx in args.moe_blocks.split(",")]
+    print(f"Applying vectorized MoE to decoder blocks: {block_indices}")
     
+    # Load CSM 1B model and generator
+    base_generator = load_csm_1b()
+    base_model = base_generator._model
+    
+    print(f"Creating MoE model with {args.num_experts} experts on blocks {block_indices}")
+    
+    # Create MoE model with optimized configuration
     moe_model = create_moe_csm_model(
-        original_model=base_generator._model,
-        moe_block_indices=moe_block_indices,
+        original_model=base_model,
+        moe_block_indices=block_indices,
         num_experts=args.num_experts,
         top_k=args.top_k,
-        use_vectorized=True
+        use_vectorized=True,
+        precision=args.precision,
+        routing_algorithm=args.routing_algorithm
     )
+    
+    # Set routing algorithm based on command-line argument
+    if hasattr(moe_model, 'moe_blocks') and args.routing_algorithm != "top_k":
+        for block_name, moe_block in moe_model.moe_blocks.items():
+            if hasattr(moe_block.moe, 'set_routing_algorithm'):
+                print(f"Setting routing algorithm for {block_name} to {args.routing_algorithm}")
+                moe_block.moe.set_routing_algorithm(args.routing_algorithm)
     
     # Replace the model in the generator
     base_generator._model = moe_model
@@ -142,13 +210,21 @@ def main():
         base_generator.sample_rate
     )
 
-    # Generate conversation
+    # Add some simple speech utterances for this conversation
+    # Each turn of dialog generates a new audio segment
     conversation = [
-        {"text": "Hey how are you doing?", "speaker_id": 0},
-        {"text": "Pretty good, pretty good. How about you?", "speaker_id": 1},
-        {"text": "I'm great! So happy to be speaking with you today.", "speaker_id": 0},
-        {"text": "Me too! This is some cool stuff, isn't it?", "speaker_id": 1}
+        {"text": "Hi, how are you doing today?", "speaker_id": 0},
+        {"text": "I'm doing well, thanks for asking. How about you?", "speaker_id": 1},
+        {"text": "Pretty good. The weather is nice outside.", "speaker_id": 0},
+        {"text": "It is! Did you have any plans for the weekend?", "speaker_id": 1}
     ]
+
+    # Print optimization configuration
+    print(f"\nOptimization Configuration:")
+    print(f"- Number of Experts: {args.num_experts}")
+    print(f"- Top-k Routing: {args.top_k}")
+    print(f"- Precision: {args.precision}")
+    print(f"- Routing Algorithm: {args.routing_algorithm}")
 
     # Generate each utterance
     generated_segments = []
@@ -244,6 +320,34 @@ def main():
             print(f"  Expert activations: {block_stats.get('expert_activations', [])}")
             print(f"  Expert percentages: {[f'{p:.2f}%' for p in block_stats.get('expert_percentages', [])]}")
             print(f"  Total tokens processed: {block_stats.get('total_tokens_processed', 0)}")
+        
+        # Calculate additional metrics across all blocks
+        all_percentages = []
+        for block_name, block_stats in stats.items():
+            if 'expert_percentages' in block_stats:
+                all_percentages.extend(block_stats['expert_percentages'])
+        
+        if all_percentages:
+            mean_usage = sum(all_percentages) / len(all_percentages)
+            std_usage = np.std(all_percentages) if len(all_percentages) > 1 else 0
+            cv = (std_usage / mean_usage) if mean_usage > 0 else float('inf')  # Coefficient of variation
+            min_usage = min(all_percentages)
+            max_usage = max(all_percentages)
+            
+            print("\nOverall Expert Usage Metrics:")
+            print(f"  Mean usage: {mean_usage:.2f}%")
+            print(f"  Standard deviation: {std_usage:.2f}%")
+            print(f"  Coefficient of variation: {cv:.4f}")
+            print(f"  Min usage: {min_usage:.2f}%")
+            print(f"  Max usage: {max_usage:.2f}%")
+            print(f"  Utilization efficiency: {(mean_usage / max_usage) * 100:.2f}%")
+        
+        # Generate expert usage visualization if requested
+        if args.visualize_experts:
+            config_str = f"n{args.num_experts}_k{args.top_k}_{args.precision}_{args.routing_algorithm}"
+            save_expert_usage_plot(stats, 
+                                  f"Expert Usage - {args.num_experts} experts, k={args.top_k}, {args.precision}",
+                                  f"expert_usage_{config_str}.png")
             
         # Show memory usage summary at the end if profiling is enabled
         if args.memory_profile and torch.cuda.is_available():

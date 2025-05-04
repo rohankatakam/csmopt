@@ -6,13 +6,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import time
+import math
 from typing import List, Tuple, Optional, Dict, Any
+from moe_precision import MixedPrecisionManager
+from optimized_router import OptimizedMoERouter
 
 class VectorizedMoEGating(nn.Module):
     """
     Vectorized implementation of top-k gating for Mixture of Experts.
     """
-    def __init__(self, input_dim: int, num_experts: int, top_k: int = 2):
+    def __init__(self, input_dim: int, num_experts: int, top_k: int = 2, precision_manager: Optional[MixedPrecisionManager] = None):
         super().__init__()
         self.input_dim = input_dim
         self.num_experts = num_experts
@@ -21,6 +24,9 @@ class VectorizedMoEGating(nn.Module):
         
         # Initialize router weights 
         nn.init.normal_(self.router.weight, mean=0.0, std=0.1)
+        
+        # Mixed precision support
+        self.precision_manager = precision_manager
     
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -48,20 +54,32 @@ class VectorizedMoEGating(nn.Module):
         # Flatten input for efficient routing
         x_flat = x.reshape(-1, self.input_dim)
         
+        # Handle mixed precision for input if manager exists
+        if self.precision_manager is not None:
+            x_flat = self.precision_manager.to_compute_precision(x_flat)
+            
         # Get router logits
         router_logits = self.router(x_flat)  # [batch_size*seq_len, num_experts]
         
-        # Get top-k experts and weights
-        routing_weights, expert_indices = torch.topk(
-            router_logits, k=self.top_k, dim=-1
-        )  # Both: [batch_size*seq_len, top_k]
-        
-        # Apply softmax to weights
-        routing_weights = F.softmax(routing_weights, dim=-1)
-        
-        # Reshape back to original dimensions
-        routing_weights = routing_weights.reshape(batch_size, seq_len, self.top_k)
-        expert_indices = expert_indices.reshape(batch_size, seq_len, self.top_k)
+        # Use precision manager for router operations if available
+        if self.precision_manager is not None:
+            routing_weights, expert_indices = self.precision_manager.manage_router_precision(router_logits)
+            # Reshape back to original dimensions
+            routing_weights = routing_weights.reshape(batch_size, seq_len, self.top_k)
+            expert_indices = expert_indices.reshape(batch_size, seq_len, self.top_k)
+        else:
+            # Default implementation without precision management
+            # Get top-k experts and weights
+            routing_weights, expert_indices = torch.topk(
+                router_logits, k=self.top_k, dim=-1
+            )  # Both: [batch_size*seq_len, top_k]
+            
+            # Apply softmax to weights
+            routing_weights = F.softmax(routing_weights, dim=-1)
+            
+            # Reshape back to original dimensions
+            routing_weights = routing_weights.reshape(batch_size, seq_len, self.top_k)
+            expert_indices = expert_indices.reshape(batch_size, seq_len, self.top_k)
         
         return routing_weights, expert_indices
 
@@ -70,7 +88,7 @@ class VectorizedMoEExpertLayer(nn.Module):
     """
     Expert layer for Mixture of Experts with optimized batch processing.
     """
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int):
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, precision_manager: Optional[MixedPrecisionManager] = None):
         super().__init__()
         self.up_proj = nn.Linear(input_dim, hidden_dim)
         self.act = nn.GELU()
@@ -81,6 +99,9 @@ class VectorizedMoEExpertLayer(nn.Module):
         nn.init.xavier_uniform_(self.down_proj.weight)
         nn.init.zeros_(self.up_proj.bias)
         nn.init.zeros_(self.down_proj.bias)
+        
+        # Mixed precision support
+        self.precision_manager = precision_manager
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -98,8 +119,22 @@ class VectorizedMoEExpertLayer(nn.Module):
         
         if self.up_proj.weight.device != device:
             self.to(device=device, dtype=dtype)
+        
+        # Handle mixed precision for computation
+        if self.precision_manager is not None:
+            # Convert to compute precision
+            x = self.precision_manager.to_compute_precision(x)
             
-        return self.down_proj(self.act(self.up_proj(x)))
+            # Expert computation
+            hidden = self.up_proj(x)
+            hidden = self.act(hidden)
+            out = self.down_proj(hidden)
+            
+            # Convert back to storage precision
+            return self.precision_manager.to_storage_precision(out)
+        else:
+            # Standard computation path
+            return self.down_proj(self.act(self.up_proj(x)))
 
 
 class VectorizedMoELayer(nn.Module):
@@ -107,26 +142,85 @@ class VectorizedMoELayer(nn.Module):
     Vectorized MoE layer with improved batch processing.
     """
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, 
-                 num_experts: int = 8, top_k: int = 2):
+                 num_experts: int = 8, top_k: int = 2, precision: str = "fp32",
+                 routing_algorithm: str = "top_k"):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
         self.num_experts = num_experts
         self.top_k = top_k
+        self.routing_algorithm = routing_algorithm
         
-        # Create gating network
-        self.gate = VectorizedMoEGating(input_dim, num_experts, top_k)
+        # Set up mixed precision support
+        self.precision = precision
+        self.precision_manager = None
+        if precision != "fp32":
+            self.precision_manager = MixedPrecisionManager(precision=precision)
         
-        # Create experts
+        # Use the optimized router instead of the simple gating mechanism
+        self.router = OptimizedMoERouter(
+            input_dim=input_dim,
+            num_experts=num_experts,
+            top_k=top_k,
+            routing_algorithm=routing_algorithm
+        )
+        
+        # Create experts with precision manager
+        self.create_experts()
+        
+        # Track expert usage for load balancing
+        self.register_buffer(
+            "expert_activation_count", 
+            torch.zeros(num_experts, dtype=torch.int32),
+            persistent=False
+        )
+        
+        # Track token processing
+        self.total_tokens_processed = 0
+        
+        # Load balancing auxiliary loss coefficient
+        self.load_balancing_coeff = 0.01
+    
+    def create_experts(self):
+        """Create the expert modules based on current configuration."""
         self.experts = nn.ModuleList([
-            VectorizedMoEExpertLayer(input_dim, hidden_dim, output_dim)
-            for _ in range(num_experts)
+            VectorizedMoEExpertLayer(self.input_dim, self.hidden_dim, self.output_dim, self.precision_manager)
+            for _ in range(self.num_experts)
         ])
         
-        # Initialize tracking for expert usage
-        self.expert_activation_count = [0] * num_experts
-        self.total_tokens_processed = 0
+        # Reset the activation counter to match the new expert count
+        self.register_buffer(
+            "expert_activation_count", 
+            torch.zeros(self.num_experts, dtype=torch.int32),
+            persistent=False
+        )
+    
+    def set_routing_algorithm(self, algorithm: str):
+        """Set the routing algorithm."""
+        if hasattr(self.router, 'set_routing_algorithm'):
+            self.router.set_routing_algorithm(algorithm)
+            self.routing_algorithm = algorithm
+    
+    def change_num_experts(self, num_experts: int):
+        """Change the number of experts dynamically."""
+        if num_experts == self.num_experts:
+            return
+            
+        print(f"Changing number of experts from {self.num_experts} to {num_experts}")
+        old_experts = self.num_experts
+        self.num_experts = num_experts
+        
+        # Create new router with updated number of experts
+        self.router = OptimizedMoERouter(
+            input_dim=self.input_dim,
+            num_experts=num_experts,
+            top_k=min(self.top_k, num_experts),  # Ensure top_k isn't larger than num_experts
+            routing_algorithm=self.routing_algorithm
+        )
+        
+        # Update experts
+        self.create_experts()
     
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, float]:
         """
@@ -138,80 +232,86 @@ class VectorizedMoELayer(nn.Module):
         Returns:
             Tuple of (output, aux_loss)
             - output: Tensor of shape [batch_size, seq_len, output_dim]
-            - aux_loss: Auxiliary load balancing loss (0.0 for now)
+            - aux_loss: Auxiliary load balancing loss
         """
-        batch_size, seq_len, embed_dim = x.shape
+        batch_size, seq_len, _ = x.shape
         device = x.device
-        dtype = x.dtype
+        input_dtype = x.dtype
         
-        # Ensure the whole module is on the same device as input
-        self.to(device=device, dtype=dtype)
+        # Save original input dtype to ensure consistent output type
+        # This is important when the MoE layer is used within a model that has its own dtype expectations
+        output_dtype = input_dtype
         
-        # Reshape for efficient processing
-        # We'll process all token embeddings as a single batch
-        x_flat = x.reshape(-1, embed_dim)  # [batch_size*seq_len, embed_dim]
+        # For mixed precision, we handle the input conversion carefully
+        compute_dtype = input_dtype
+        if self.precision_manager is not None:
+            compute_dtype = self.precision_manager.get_compute_dtype()
+            # Only convert if necessary
+            if x.dtype != compute_dtype:
+                x = x.to(dtype=compute_dtype)
         
-        # Get routing weights and indices
-        routing_weights_orig, expert_indices_orig = self.gate(x)
+        # Get routing weights, expert indices, and routing aux loss using the optimized router
+        # The router will handle its own dtype conversion
+        routing_weights, expert_indices, router_aux_loss = self.router(x)
         
-        # Reshape to match x_flat
-        routing_weights = routing_weights_orig.reshape(-1, self.top_k)  # [batch_size*seq_len, top_k]
-        expert_indices = expert_indices_orig.reshape(-1, self.top_k)    # [batch_size*seq_len, top_k]
+        # Update token processing count
+        self.total_tokens_processed += batch_size * seq_len
         
-        # Count tokens for tracking expert usage
-        flat_indices = expert_indices.flatten()
+        # Increment expert activation count
+        expert_indices_flat = expert_indices.flatten()
         for expert_idx in range(self.num_experts):
-            self.expert_activation_count[expert_idx] += (flat_indices == expert_idx).sum().item()
-        self.total_tokens_processed += batch_size * seq_len * self.top_k
+            # Count occurrences of this expert in the indices
+            count = torch.sum(expert_indices_flat == expert_idx).item()
+            self.expert_activation_count[expert_idx] += count
+            
+        # Prepare empty tensor for expert outputs using the compute dtype for intermediate calculations
+        expert_outputs = torch.zeros(
+            batch_size, seq_len, self.output_dim, 
+            device=device, dtype=compute_dtype
+        )
         
-        # Initialize output tensor
-        final_output = torch.zeros_like(x_flat)  # [batch_size*seq_len, embed_dim]
-        
-        # Process each expert in parallel
-        # This approach processes all tokens for an expert at once
+        # Process each expert - batched processing for efficiency
         for expert_idx in range(self.num_experts):
-            # For each token position [0...batch_size*seq_len-1]
-            # Find all positions where this expert_idx appears in any top-k position
-            # Check if any token uses this expert
-            expert_mask = torch.any(expert_indices == expert_idx, dim=1)  # [batch_size*seq_len]
-            
-            if not expert_mask.any():
-                continue  # Skip if no tokens use this expert
-            
-            # Get all tokens that use this expert
-            selected_tokens = x_flat[expert_mask]  # [num_tokens, embed_dim]
-            
-            # Make sure expert is on the same device
-            if self.experts[expert_idx].up_proj.weight.device != device:
-                self.experts[expert_idx].to(device=device, dtype=dtype)
-                
-            # Process all these tokens at once
-            expert_output = self.experts[expert_idx](selected_tokens)  # [num_tokens, embed_dim]
-            
-            # For each token, find corresponding weight
-            # First, get positions in the flattened array
-            token_positions = expert_mask.nonzero(as_tuple=True)[0]  # [num_tokens]
-            
-            # For each selected token, find which position (0...top_k-1) has this expert
-            token_routing_weights = torch.zeros(token_positions.size(0), device=device, dtype=dtype)
+            # Find positions where this expert is used
+            expert_positions = []
             
             for k in range(self.top_k):
-                # Create mask for tokens where this expert is at position k
-                k_mask = expert_indices[token_positions, k] == expert_idx
-                if k_mask.any():
-                    # Get the weights for these tokens
-                    token_routing_weights[k_mask] = routing_weights[token_positions[k_mask], k]
+                batch_indices, seq_indices = torch.where(expert_indices[:, :, k] == expert_idx)
+                if batch_indices.size(0) > 0:
+                    # Store (batch_idx, seq_idx, k) for each occurrence
+                    for b, s in zip(batch_indices, seq_indices):
+                        expert_positions.append((b.item(), s.item(), k))
             
-            # Apply weights to expert outputs
-            weighted_output = expert_output * token_routing_weights.unsqueeze(1)
+            # Skip if this expert is not used
+            if not expert_positions:
+                continue
+                
+            # Create input batch for this expert
+            batch_idxs = [pos[0] for pos in expert_positions]
+            seq_idxs = [pos[1] for pos in expert_positions]
+            k_idxs = [pos[2] for pos in expert_positions]
             
-            # Add to final output
-            final_output[token_positions] += weighted_output
+            # Gather inputs for this expert
+            expert_inputs = x[batch_idxs, seq_idxs]
             
-        # Reshape back to original dimensions
-        final_output = final_output.reshape(batch_size, seq_len, embed_dim)
+            # Process the batch through this expert (precision handled inside)
+            processed = self.experts[expert_idx](expert_inputs)
+            
+            # Get weights for this expert based on routing
+            expert_weights = routing_weights[batch_idxs, seq_idxs, k_idxs]
+            
+            # Apply weights - scale outputs by routing weights
+            processed = processed * expert_weights.unsqueeze(-1)
+            
+            # Accumulate to final output
+            for i, (b, s, _) in enumerate(expert_positions):
+                expert_outputs[b, s] += processed[i]
         
-        return final_output, 0.0  # No auxiliary loss for now
+        # Convert output back to original input dtype if needed
+        if expert_outputs.dtype != output_dtype:
+            expert_outputs = expert_outputs.to(dtype=output_dtype)
+            
+        return expert_outputs, router_aux_loss
     
     def get_expert_activations(self) -> List[int]:
         """
@@ -235,11 +335,28 @@ class VectorizedMoELayer(nn.Module):
         
         percentages = [count / total * 100 for count in self.expert_activation_count]
         
+        # Compute utilization metrics
+        mean_util = sum(percentages) / len(percentages)
+        nonzero_util = sum(1 for p in percentages if p > 0)
+        utilization_rate = nonzero_util / self.num_experts * 100 if self.num_experts > 0 else 0
+        
+        # Get router statistics if available
+        router_stats = {}
+        if hasattr(self.router, 'get_router_statistics'):
+            router_stats = self.router.get_router_statistics()
+        
         return {
             "expert_activations": self.expert_activation_count,
             "expert_percentages": percentages,
             "total_tokens_processed": self.total_tokens_processed,
-            "total_expert_activations": total
+            "total_expert_activations": total,
+            "mean_utilization": mean_util,
+            "active_experts": nonzero_util,
+            "utilization_rate": utilization_rate,
+            "num_experts": self.num_experts,
+            "top_k": self.top_k,
+            "routing_algorithm": getattr(self, 'routing_algorithm', 'top_k'),
+            "router_stats": router_stats
         }
 
 
@@ -248,19 +365,22 @@ class OptimizedMoEBlockWrapper(nn.Module):
     """
     Wrapper for decoder block that replaces MLP with optimized MoE.
     """
-    def __init__(self, original_block, hidden_dim, mlp_dim, num_experts=8, top_k=2):
+    def __init__(self, original_block, hidden_dim, mlp_dim, num_experts=8, top_k=2, 
+                precision="fp32", routing_algorithm="top_k"):
         super().__init__()
         # Store the original block directly
         self.original_block = original_block
         self.use_moe = True
         
-        # Create MoE layer
+        # Create MoE layer with specified precision and routing algorithm
         self.moe = VectorizedMoELayer(
             input_dim=hidden_dim,
             hidden_dim=mlp_dim,
             output_dim=hidden_dim,
             num_experts=num_experts,
-            top_k=top_k
+            top_k=top_k,
+            precision=precision,
+            routing_algorithm=routing_algorithm
         )
         
         # Store parameters for reference
@@ -268,8 +388,21 @@ class OptimizedMoEBlockWrapper(nn.Module):
         self.mlp_dim = mlp_dim
         self.num_experts = num_experts
         self.top_k = top_k
+        self.precision = precision
+        self.routing_algorithm = routing_algorithm
         
-        print(f"Created optimized MoE block with {num_experts} experts and top-{top_k} routing")
+        print(f"Created optimized MoE block with {num_experts} experts and top-{top_k} routing "  
+              f"using {precision} precision and {routing_algorithm} routing algorithm")
+    
+    def set_num_experts(self, num_experts):
+        """Change the number of experts in the MoE layer."""
+        self.num_experts = num_experts
+        self.moe.change_num_experts(num_experts)
+        
+    def set_routing_algorithm(self, algorithm):
+        """Set the routing algorithm for the MoE layer."""
+        self.routing_algorithm = algorithm
+        self.moe.set_routing_algorithm(algorithm)
     
     def forward(self, x, *args, **kwargs):
         """
