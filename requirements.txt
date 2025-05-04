@@ -4,10 +4,10 @@ torchvision==0.16.0
 torchaudio==2.1.0
 
 # Hugging Face ecosystem
-transformers==4.38.0
-tokenizers==0.15.2
-huggingface_hub==0.19.3
-safetensors==0.4.1
+transformers==4.51.3  # Required for Llama 4 compatibility
+tokenizers==0.21.1    # Updated to match tested version
+huggingface_hub==0.30.2  # Updated to match tested version
+safetensors==0.5.3    # Updated to match tested version
 sentencepiece==0.2.0
 
 # Quantization and optimization

@@ -16,13 +16,13 @@ fi
 export PATH="$HOME/miniconda3/bin:$PATH"
 
 # Create environment if it doesn't exist
-if ! conda info --envs | grep -q "csm_llama4"; then
+if ! conda info --envs | grep -q "csm_fixed"; then
     echo "Creating conda environment..."
-    conda create -n csm_llama4 python=3.10 -y
+    conda create -n csm_fixed python=3.10 -y
 fi
 
 # Activate environment
-source $HOME/miniconda3/bin/activate csm_llama4
+source $HOME/miniconda3/bin/activate csm_fixed
 
 # Install all dependencies from requirements.txt
 echo "Installing dependencies from requirements.txt..."
@@ -39,10 +39,23 @@ export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
 
 # Begin downloading models in background
 echo "Starting model downloads in background..."
-python -c "from transformers import AutoModelForCausalLM, AutoTokenizer; AutoTokenizer.from_pretrained('meta-llama/Llama-4-Scout-17B-16E-Instruct'); print('Tokenizer downloaded')" &
+# Check if HF_TOKEN is set
+if [ -z "$HF_TOKEN" ]; then
+    echo "Warning: HF_TOKEN environment variable not set. You'll need to set it for accessing gated models."
+    echo "export HUGGING_FACE_HUB_TOKEN=your_token_here"
+else
+    echo "Using provided Hugging Face token for model downloads."
+fi
+
+# Start downloading tokenizers in background
+python -c "import os; from transformers import AutoModelForCausalLM, AutoTokenizer; AutoTokenizer.from_pretrained('meta-llama/Llama-4-Scout-17B-16E-Instruct', token=os.environ.get('HUGGING_FACE_HUB_TOKEN')); print('Llama 4 tokenizer downloaded')" &
+python -c "import os; from transformers import AutoModelForCausalLM, AutoTokenizer; AutoTokenizer.from_pretrained('meta-llama/Llama-3.2-1B', token=os.environ.get('HUGGING_FACE_HUB_TOKEN')); print('Llama 3.2 tokenizer downloaded')" &
 
 echo "Environment setup complete!"
 echo "To download the full Llama 4 model (this will take time):"
-echo "python -c \"from transformers import AutoModelForCausalLM; AutoModelForCausalLM.from_pretrained('meta-llama/Llama-4-Scout-17B-16E-Instruct', load_in_4bit=True, device_map='auto')\""
+echo "python -c \"import os; from transformers import AutoModelForCausalLM; AutoModelForCausalLM.from_pretrained('meta-llama/Llama-4-Scout-17B-16E-Instruct', token=os.environ.get('HUGGING_FACE_HUB_TOKEN'), load_in_4bit=True, device_map='auto')\""
+
+echo "To download the Llama 3.2 model (smaller, faster):"
+echo "python -c \"import os; from transformers import AutoModelForCausalLM; AutoModelForCausalLM.from_pretrained('meta-llama/Llama-3.2-1B', token=os.environ.get('HUGGING_FACE_HUB_TOKEN'), device_map='auto')\""
 echo ""
-echo "To use this environment: source $HOME/miniconda3/bin/activate csm_llama4"
+echo "To use this environment: source $HOME/miniconda3/bin/activate csm_fixed"
