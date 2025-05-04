@@ -416,6 +416,264 @@ def generate_report(
     logger.info(f"Test report saved to {report_path}")
     return report_path
 
+def simulate_adapter_test(
+    adapter_path: str,
+    device: str = "cuda"
+) -> Dict[str, Any]:
+    """
+    Test the adapter in simulation mode without loading the actual Llama 4 model.
+    
+    Args:
+        adapter_path: Path to the adapter checkpoint
+        device: Device to use for testing
+        
+    Returns:
+        Dictionary with test results
+    """
+    results = {
+        "component_tests": {
+            "adapter_load": {"status": "not_run", "details": ""},
+            "adapter_shapes": {"status": "not_run", "details": ""},
+            "adapter_forward": {"status": "not_run", "details": ""}
+        },
+        "timings": {},
+        "overall_status": "not_run"
+    }
+    
+    # Test adapter loading
+    try:
+        start_time = time.time()
+        adapter = Llama4Adapter(input_dim=5120, output_dim=4096)
+        
+        # Load weights if file exists
+        if os.path.exists(adapter_path):
+            adapter.load_state_dict(torch.load(adapter_path, map_location=device))
+            adapter_source = f"from file {adapter_path}"
+        else:
+            logger.warning(f"Adapter file {adapter_path} not found, using random weights")
+            adapter_source = "with random weights"
+            
+        adapter.to(device)
+        adapter.eval()
+        load_time = time.time() - start_time
+        
+        results["component_tests"]["adapter_load"] = {
+            "status": "pass",
+            "details": f"Adapter loaded successfully {adapter_source}"
+        }
+        results["timings"]["adapter_load"] = load_time
+    except Exception as e:
+        results["component_tests"]["adapter_load"] = {
+            "status": "fail",
+            "details": f"Failed to load adapter: {str(e)}"
+        }
+        logger.error(f"Adapter load test failed: {e}")
+        return results
+    
+    # Test adapter shapes
+    try:
+        input_dim = adapter.input_dim
+        output_dim = adapter.output_dim
+        
+        if input_dim != 5120:
+            raise ValueError(f"Expected input dimension 5120, got {input_dim}")
+        
+        if output_dim != 4096:
+            raise ValueError(f"Expected output dimension 4096, got {output_dim}")
+        
+        results["component_tests"]["adapter_shapes"] = {
+            "status": "pass",
+            "details": f"Adapter dimensions correct: input_dim={input_dim}, output_dim={output_dim}"
+        }
+    except Exception as e:
+        results["component_tests"]["adapter_shapes"] = {
+            "status": "fail",
+            "details": f"Adapter dimensions incorrect: {str(e)}"
+        }
+        logger.error(f"Adapter shapes test failed: {e}")
+    
+    # Test adapter forward pass
+    try:
+        test_input = torch.randn(1, input_dim).to(device)
+        
+        start_time = time.time()
+        test_output = adapter(test_input)
+        forward_time = time.time() - start_time
+        
+        if test_output.shape != torch.Size([1, output_dim]):
+            raise ValueError(f"Expected output shape [1, {output_dim}], got {test_output.shape}")
+        
+        results["component_tests"]["adapter_forward"] = {
+            "status": "pass",
+            "details": f"Adapter forward pass successful: input {test_input.shape} -> output {test_output.shape}"
+        }
+        results["timings"]["adapter_forward"] = forward_time
+        
+        # Store hidden state statistics from a sample run
+        results["hidden_states_stats"] = {
+            "mean": float(test_output.mean().item()),
+            "std": float(test_output.std().item()),
+            "min": float(test_output.min().item()),
+            "max": float(test_output.max().item()),
+            "shape": [int(dim) for dim in test_output.shape]
+        }
+    except Exception as e:
+        results["component_tests"]["adapter_forward"] = {
+            "status": "fail",
+            "details": f"Adapter forward pass failed: {str(e)}"
+        }
+        logger.error(f"Adapter forward test failed: {e}")
+    
+    # Set overall status
+    all_passed = all(
+        test["status"] == "pass" 
+        for test in results["component_tests"].values()
+    )
+    results["overall_status"] = "pass" if all_passed else "fail"
+    
+    return results
+
+def simulate_csm_integration(
+    adapter_path: str,
+    input_texts: List[str],
+    output_dir: str,
+    device: str = "cuda"
+) -> Dict[str, Any]:
+    """
+    Simulate the CSM integration without requiring the actual Llama 4 model.
+    
+    Args:
+        adapter_path: Path to the adapter checkpoint
+        input_texts: List of input texts
+        output_dir: Directory to save outputs
+        device: Device to use
+        
+    Returns:
+        Dictionary with simulation results
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    results = {
+        "csm_tests": [],
+        "overall_status": "not_run"
+    }
+    
+    # Load adapter
+    try:
+        adapter = Llama4Adapter(input_dim=5120, output_dim=4096)
+        if os.path.exists(adapter_path):
+            adapter.load_state_dict(torch.load(adapter_path, map_location=device))
+        adapter.to(device)
+        adapter.eval()
+    except Exception as e:
+        logger.error(f"Failed to load adapter for simulation: {e}")
+        results["overall_status"] = "fail"
+        return results
+    
+    # Process each input text
+    for i, text in enumerate(input_texts):
+        test_result = {
+            "input_text": text,
+            "test_id": i + 1,
+            "status": "not_run",
+            "details": "",
+            "timings": {}
+        }
+        
+        try:
+            # Generate simulated Llama 4 hidden states
+            # We'll generate random tensors of the right dimension
+            # In a real scenario, these would come from the model
+            import hashlib
+            # Use text hash for deterministic random generation
+            text_hash = int(hashlib.md5(text.encode()).hexdigest(), 16) % 10000
+            torch.manual_seed(text_hash)
+            
+            # Simulate a batch of hidden states (batch_size, seq_len, hidden_dim)
+            tokens = text.split()
+            seq_len = max(len(tokens), 1)  # At least 1 token
+            
+            start_time = time.time()
+            simulated_hidden_states = torch.randn(1, seq_len, adapter.input_dim).to(device)
+            hidden_time = time.time() - start_time
+            test_result["timings"]["hidden_states"] = hidden_time
+            
+            # Apply adapter
+            start_time = time.time()
+            adapted_hidden_states = adapter(simulated_hidden_states)
+            adapter_time = time.time() - start_time
+            test_result["timings"]["adapter"] = adapter_time
+            
+            # Save hidden states
+            torch.save(
+                {
+                    "input_hidden_states": simulated_hidden_states.cpu(),
+                    "adapted_hidden_states": adapted_hidden_states.cpu(),
+                    "input_text": text
+                },
+                os.path.join(output_dir, f"simulated_hidden_states_{i+1}.pt")
+            )
+            
+            # Simulate CSM audio generation
+            start_time = time.time()
+            
+            # Simulate CSM processing with a simple function
+            def simulate_csm_processing(hidden_states):
+                import torch.nn.functional as F
+                # Apply a random transformation to simulate CSM processing
+                batch_size, seq_len, dim = hidden_states.shape
+                
+                # Simulate some processing time
+                time.sleep(0.2)
+                
+                # Create a simulated audio output (1 second at 24kHz)
+                audio_length = 24000
+                simulated_audio = torch.zeros(1, audio_length)
+                
+                # Add some structure based on the hidden states
+                for i in range(min(seq_len, 10)):
+                    freq = float(F.softmax(hidden_states[0, i, :100], dim=0).argmax() + 1) * 10
+                    amp = float(torch.sigmoid(hidden_states[0, i, 100]).item())
+                    
+                    t = torch.linspace(0, 1, audio_length)
+                    simulated_audio += amp * torch.sin(2 * 3.14159 * freq * t).unsqueeze(0)
+                
+                # Normalize
+                simulated_audio = simulated_audio / (simulated_audio.abs().max() + 1e-6)
+                
+                return simulated_audio
+            
+            # Apply the simulation function
+            simulated_audio = simulate_csm_processing(adapted_hidden_states)
+            
+            # Save the simulated audio
+            import torchaudio
+            torchaudio.save(
+                os.path.join(output_dir, f"simulated_audio_{i+1}.wav"),
+                simulated_audio,
+                sample_rate=24000
+            )
+            
+            csm_time = time.time() - start_time
+            test_result["timings"]["csm_processing"] = csm_time
+            
+            # Test successful
+            test_result["status"] = "pass"
+            test_result["details"] = "CSM integration simulation successful"
+            
+        except Exception as e:
+            test_result["status"] = "fail"
+            test_result["details"] = f"CSM integration simulation failed: {str(e)}"
+            logger.error(f"CSM simulation failed for input {i+1}: {e}")
+        
+        results["csm_tests"].append(test_result)
+    
+    # Overall status
+    all_passed = all(test["status"] == "pass" for test in results["csm_tests"])
+    results["overall_status"] = "pass" if all_passed else "fail"
+    
+    return results
+
 def main():
     parser = argparse.ArgumentParser(description="Test Llama 4 to CSM integration pipeline")
     
@@ -440,6 +698,8 @@ def main():
                        help="Skip individual component tests")
     parser.add_argument("--skip_csm_tests", action="store_true",
                        help="Skip CSM integration tests")
+    parser.add_argument("--simulation", action="store_true", default=False,
+                       help="Run in simulation mode without loading actual Llama 4 model")
     
     args = parser.parse_args()
     
@@ -462,12 +722,20 @@ def main():
     component_results = {"overall_status": "skip"}
     if not args.skip_component_tests:
         logger.info("Running component tests...")
-        component_results = test_pipeline_components(
-            llama4_model_name=args.llama4_model,
-            adapter_path=args.adapter,
-            device=args.device,
-            load_in_4bit=args.load_in_4bit
-        )
+        
+        if args.simulation:
+            logger.info("Using simulation mode for component tests")
+            component_results = simulate_adapter_test(
+                adapter_path=args.adapter,
+                device=args.device
+            )
+        else:
+            component_results = test_pipeline_components(
+                llama4_model_name=args.llama4_model,
+                adapter_path=args.adapter,
+                device=args.device,
+                load_in_4bit=args.load_in_4bit
+            )
         
         # Save component test results
         with open(os.path.join(args.output_dir, "component_test_results.json"), "w") as f:
@@ -478,20 +746,29 @@ def main():
     if not args.skip_csm_tests:
         logger.info("Running CSM integration tests...")
         
-        # Create integration
-        integration = Llama4CSMIntegration(
-            llama4_model_name=args.llama4_model,
-            adapter_path=args.adapter,
-            device=args.device,
-            load_in_4bit=args.load_in_4bit
-        )
-        
-        # Run tests
-        integration_results = csm_integration_test(
-            llama4_integration=integration,
-            input_texts=test_inputs,
-            output_dir=args.output_dir
-        )
+        if args.simulation:
+            logger.info("Using simulation mode for CSM integration tests")
+            integration_results = simulate_csm_integration(
+                adapter_path=args.adapter,
+                input_texts=test_inputs,
+                output_dir=args.output_dir,
+                device=args.device
+            )
+        else:
+            # Create integration with real models
+            integration = Llama4CSMIntegration(
+                llama4_model_name=args.llama4_model,
+                adapter_path=args.adapter,
+                device=args.device,
+                load_in_4bit=args.load_in_4bit
+            )
+            
+            # Run tests with real models
+            integration_results = csm_integration_test(
+                llama4_integration=integration,
+                input_texts=test_inputs,
+                output_dir=args.output_dir
+            )
         
         # Save integration test results
         with open(os.path.join(args.output_dir, "integration_test_results.json"), "w") as f:
