@@ -24,30 +24,13 @@ fi
 # Activate environment
 source $HOME/miniconda3/bin/activate csm_llama4
 
+# Install all dependencies from requirements.txt
+echo "Installing dependencies from requirements.txt..."
+pip install -r "$(dirname "$0")/../requirements.txt"
+
 # Install PyTorch with CUDA
-echo "Installing PyTorch..."
-pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
-
-# Install distributed training dependencies
-echo "Installing distributed training libraries..."
-pip install accelerate
-pip install pytorch-lightning
-pip install bitsandbytes
-pip install triton
-
-# Install Hugging Face libraries
-echo "Installing Hugging Face libraries..."
-pip install transformers
-pip install huggingface_hub
-pip install safetensors
-pip install sentencepiece
-
-# Install utility libraries
-echo "Installing utility libraries..."
-pip install tqdm
-pip install matplotlib
-pip install pandas
-pip install tensorboard
+echo "Installing PyTorch with CUDA..."
+python -m pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118
 
 # Set environment variables for optimal performance
 echo "Setting environment variables..."
