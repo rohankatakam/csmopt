@@ -16,6 +16,11 @@ from typing import Dict, Any, List, Optional, Tuple
 # Add parent directory to path to import project modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Add project root
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+from logging_config import setup_logger # Import setup_logger
+
 try:
     from llama4_adapter import Llama4Adapter
     from llama4_integration import load_llama4_model, load_llama4_adapter
@@ -23,11 +28,7 @@ except ImportError:
     print("Warning: Couldn't import from project modules, trying alternate imports...")
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+logger = setup_logger('real_tts_test', level=logging.INFO) # Use setup_logger
 
 def extract_hidden_states_from_llama(
     model_name: str,

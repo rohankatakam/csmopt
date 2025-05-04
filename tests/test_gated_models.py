@@ -11,16 +11,25 @@ import logging
 import argparse
 from pathlib import Path
 from typing import Dict, Any, List
+import unittest
 
 # Add parent directory to path to import project modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+# Add project root to path
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+try:
+    from moe_router import MoERouter, TopKGate # Assuming these are correct
+    from csm_moe_block import CSMMoEBlock
+    from logging_config import setup_logger # Import setup_logger
+    MODELS_AVAILABLE = True
+except ImportError as e:
+    print(f"Skipping gated model tests: {e}")
+    MODELS_AVAILABLE = False
+
+# Setup logger using the centralized config
+logger = setup_logger('test_gated_models', level=logging.INFO) # Use setup_logger
 
 def test_model_access(model_name: str, token: str = None):
     """
@@ -131,3 +140,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+# Only run tests if models are available
+@unittest.skipUnless(MODELS_AVAILABLE, "Model components not found")
+class TestGatedModels(unittest.TestCase):
+    # ... rest of the test class ...

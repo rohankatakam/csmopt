@@ -11,16 +11,30 @@ import soundfile as sf
 import argparse
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+import unittest
 
 # Add parent directory to path to import project modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+# Add project root
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+from logging_config import setup_logger # Import setup_logger
+
+# Placeholder imports
+try:
+    # from csm_decoder import CSMDecoder # Your TTS model
+    TTS_AVAILABLE = True
+except ImportError:
+    print("Skipping CSM TTS tests: CSMDecoder not found.")
+    TTS_AVAILABLE = False
+    class DummyModel(torch.nn.Module):
+        def __init__(self, *args, **kwargs): super().__init__()
+        def forward(self, x): return torch.randn(x.shape[0], x.shape[1], 32000) # Dummy logits or audio
+    CSMDecoder = DummyModel
+
+# Setup logger
+logger = setup_logger('test_csm_tts', level=logging.INFO) # Use setup_logger
 
 def attempt_csm_tts(
     text: str,
@@ -320,3 +334,7 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+@unittest.skipUnless(TTS_AVAILABLE, "CSMDecoder component not found")
+class TestCSM_TTS(unittest.TestCase):
+    # ... (rest of test class)

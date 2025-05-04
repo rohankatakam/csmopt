@@ -14,6 +14,7 @@ import argparse
 import logging
 import json
 from typing import Dict, List, Tuple, Any, Optional
+import unittest
 
 # Add parent directory to path to import from project root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,13 +22,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Import project modules
 from llama4_integration import Llama4CSMIntegration, load_llama4_model, load_llama4_adapter
 from llama4_adapter import Llama4Adapter
+from logging_config import setup_logger
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+logger = setup_logger('test_integration_pipeline', level=logging.INFO)
 
 def test_pipeline_components(
     llama4_model_name: str,

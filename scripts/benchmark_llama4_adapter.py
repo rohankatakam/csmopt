@@ -17,6 +17,7 @@ import psutil
 import pandas as pd
 import matplotlib.pyplot as plt
 from typing import Dict, List, Tuple, Optional, Any
+from tqdm import tqdm
 
 # Add parent directory to path to import from project root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,12 +26,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from llama4_integration import Llama4CSMIntegration, load_llama4_model, load_llama4_adapter
 from llama4_adapter import Llama4Adapter
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+# Assuming logging_config.py is in the parent directory
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from logging_config import setup_logger
+
+# Setup logger
+logger = setup_logger('llama4_adapter_benchmark', level=logging.INFO)
 
 class PerformanceMonitor:
     """Monitor various performance metrics during the benchmark."""
@@ -393,7 +394,6 @@ def benchmark_integration(
     
     # Save results to file
     results_file = os.path.join(output_dir, "benchmark_results.json")
-    import json
     with open(results_file, "w") as f:
         json.dump(results, f, indent=2)
     

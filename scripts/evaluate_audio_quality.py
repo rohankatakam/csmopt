@@ -18,6 +18,7 @@ import torchaudio
 import matplotlib.pyplot as plt
 from typing import Dict, List, Tuple, Any, Optional
 from tqdm import tqdm
+from logging_config import setup_logger
 
 # Add parent directory to path to import from project root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -31,11 +32,7 @@ except ImportError:
     logging.warning("CSM audio generation modules not available - running in simulation mode")
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+logger = setup_logger('audio_eval', level=logging.INFO)
 
 def compute_mel_spectrogram(
     audio: torch.Tensor,

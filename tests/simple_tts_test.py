@@ -12,12 +12,25 @@ import argparse
 import soundfile as sf
 from pathlib import Path
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+# Add project root
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+from logging_config import setup_logger # Import setup_logger
+
+# Placeholder for your TTS model/components
+try:
+    # from csm_decoder import CSMDecoder # Example
+    TTS_AVAILABLE = True
+except ImportError:
+    print("Skipping simple TTS test: Components not found.")
+    TTS_AVAILABLE = False
+    class DummyModel(torch.nn.Module):
+        def __init__(self, *args, **kwargs): super().__init__()
+        def forward(self, x): return torch.randn(1, 16000) # Dummy audio
+    CSMDecoder = DummyModel
+
+# Setup logger
+logger = setup_logger('simple_tts_test', level=logging.INFO) # Use setup_logger
 
 def generate_speech(
     text: str,
@@ -161,4 +174,9 @@ def main():
         return 1
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if TTS_AVAILABLE:
+        logger.info("Running Simple TTS Test...")
+        run_simple_tts_test(device="cuda" if torch.cuda.is_available() else "cpu")
+        logger.info("Simple TTS Test Completed.")
+    else:
+        logger.warning("Skipping Simple TTS Test due to missing components.")

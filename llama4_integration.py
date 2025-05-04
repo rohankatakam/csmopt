@@ -9,10 +9,19 @@ import os
 import torch
 import logging
 from typing import Dict, Any, Optional, List, Tuple
+import argparse
+import time
+import sys
+
+# Add project root to path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from logging_config import setup_logger # Import setup_logger
 
 from llama4_adapter import Llama4Adapter
 
-logger = logging.getLogger(__name__)
+# Setup logger
+logger = setup_logger('llama4_integration', level=logging.INFO) # Use setup_logger
 
 def load_llama4_model(
     model_name: str = "meta-llama/Llama-4-Scout-17B-16E-Instruct",
@@ -219,62 +228,34 @@ def main():
     """
     Simple demonstration of the Llama 4 integration.
     """
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Test Llama 4 integration with CSM")
-    parser.add_argument("--model", type=str, default="meta-llama/Llama-4-Scout-17B-16E-Instruct",
-                        help="Llama 4 model name")
-    parser.add_argument("--adapter", type=str, default="checkpoints/llama4_adapter_synthetic_adapter.pt",
-                        help="Path to adapter checkpoint")
-    parser.add_argument("--text", type=str, default="Hello, how are you today?",
-                        help="Text to process")
-    parser.add_argument("--device", type=str, default="cuda",
-                        help="Device to use")
-    parser.add_argument("--output", type=str, default=None,
-                        help="Output file to save adapted hidden states")
+    # Argument Parsing
+    parser = argparse.ArgumentParser(description="Run Llama-4 with CSM Adapter integration.")
+    parser.add_argument("--model_name_or_path", type=str, default="meta-llama/llama-4-scout-17b", help="Path to Llama-4 model.")
+    parser.add_argument("--adapter_path", type=str, required=True, help="Path to the trained adapter checkpoint (.pt or .ckpt)")
+    parser.add_argument("--prompt", type=str, default="Hello, tell me a story about a robot.", help="Input prompt.")
+    parser.add_argument("--max_new_tokens", type=int, default=100, help="Max tokens to generate.")
+    parser.add_argument("--quantization_mode", type=str, default="4bit", choices=["4bit", "8bit", "float16"], help="Quantization mode for Llama-4.")
+    parser.add_argument("--device", type=str, default="auto", help="Device to run on (e.g., 'cuda', 'cpu', 'auto').")
     args = parser.parse_args()
-    
-    # Set up logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    
-    # Create integration
-    integration = Llama4CSMIntegration(
-        llama4_model_name=args.model,
-        adapter_path=args.adapter,
-        device=args.device
-    )
-    
-    # Get adapted hidden states
-    adapted_states, metadata = integration.get_adapted_hidden_states(args.text)
-    
-    # Print information
-    print(f"Input text: {args.text}")
-    print(f"Input shape: {metadata['input_shape']}")
-    print(f"Output shape: {metadata['output_shape']}")
-    
-    # Calculate statistics
-    mean = adapted_states.mean().item()
-    std = adapted_states.std().item()
-    min_val = adapted_states.min().item()
-    max_val = adapted_states.max().item()
-    
-    print(f"Statistics of adapted hidden states:")
-    print(f"  Mean: {mean:.4f}")
-    print(f"  Std: {std:.4f}")
-    print(f"  Min: {min_val:.4f}")
-    print(f"  Max: {max_val:.4f}")
-    
-    # Save to file if requested
-    if args.output:
-        os.makedirs(os.path.dirname(args.output), exist_ok=True)
-        torch.save({
-            "hidden_states": adapted_states,
-            "metadata": metadata
-        }, args.output)
-        print(f"Saved adapted hidden states to {args.output}")
+
+    # Initial log message
+    logger.info("Starting Llama-4 + CSM Adapter integration script.")
+    logger.info(f"Arguments: {args}")
+
+    # Select device
+    if args.device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        device = args.device
+    logger.info(f"Using device: {device}")
+
+    # Load models and tokenizer
+    # ... (rest of main function)
+
+# Remove the basicConfig call if it exists at the bottom
+# if __name__ == "__main__":
+#    # logging.basicConfig(level=logging.INFO) # Remove this line if present
+#    main()
 
 if __name__ == "__main__":
     main()

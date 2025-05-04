@@ -11,6 +11,7 @@ import sys
 import torch
 import argparse
 import logging
+import time
 from typing import Dict, Any, Optional
 
 # Add parent directory to path to import from project root
@@ -19,13 +20,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Import project modules
 from llama4_integration import Llama4CSMIntegration
 from llama4_adapter import Llama4Adapter
+from logging_config import setup_logger
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+logger = setup_logger('run_csm_llama4', level=logging.INFO)
 
 def main():
     parser = argparse.ArgumentParser(description="Run CSM with Llama 4 adapter")
@@ -69,7 +67,7 @@ def main():
     
     # Set debug mode if requested
     if args.debug:
-        logging.getLogger().setLevel(logging.DEBUG)
+        logger.setLevel(logging.DEBUG)
         logger.debug("Debug mode enabled")
     
     # Read input from file if specified with @
@@ -97,12 +95,12 @@ def main():
         
         # Generate hidden states with adapter
         logger.info("Generating adapted hidden states from Llama 4")
-        start_time = torch.cuda.Event(enable_timing=True)
-        end_time = torch.cuda.Event(enable_timing=True)
+        start_time = time.time()
+        end_time = time.time()
         
         # Start timer
         if args.performance_stats and torch.cuda.is_available():
-            start_time.record()
+            start_time = time.time()
         
         # Get adapted hidden states
         adapted_states, metadata = integration.get_adapted_hidden_states(
@@ -112,10 +110,9 @@ def main():
         
         # End timer for hidden state generation
         if args.performance_stats and torch.cuda.is_available():
-            end_time.record()
-            torch.cuda.synchronize()
-            elapsed_time = start_time.elapsed_time(end_time)
-            logger.info(f"Hidden state generation and adaptation took {elapsed_time:.2f} ms")
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            logger.info(f"Hidden state generation and adaptation took {elapsed_time:.2f} seconds")
         
         # Save hidden states if requested
         if args.output_hidden_states:
@@ -143,26 +140,25 @@ def main():
             n_iterations = 10
             
             if torch.cuda.is_available():
-                start_time = torch.cuda.Event(enable_timing=True)
-                end_time = torch.cuda.Event(enable_timing=True)
+                start_time = time.time()
+                end_time = time.time()
                 
                 # Warmup
                 for _ in range(3):
                     integration.get_adapted_hidden_states(input_text, use_cache=args.kv_cache)
                 
                 # Benchmark
-                start_time.record()
+                start_time = time.time()
                 for _ in range(n_iterations):
                     integration.get_adapted_hidden_states(input_text, use_cache=args.kv_cache)
-                end_time.record()
+                end_time = time.time()
                 
-                torch.cuda.synchronize()
-                elapsed_time = start_time.elapsed_time(end_time)
+                elapsed_time = end_time - start_time
                 avg_time = elapsed_time / n_iterations
                 
                 logger.info(f"Benchmark results:")
-                logger.info(f"  Average processing time: {avg_time:.2f} ms per iteration")
-                logger.info(f"  Total time for {n_iterations} iterations: {elapsed_time:.2f} ms")
+                logger.info(f"  Average processing time: {avg_time:.2f} seconds per iteration")
+                logger.info(f"  Total time for {n_iterations} iterations: {elapsed_time:.2f} seconds")
         
         logger.info("Processing completed successfully")
         
