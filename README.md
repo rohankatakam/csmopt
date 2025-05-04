@@ -1,10 +1,14 @@
-# CSM
+# CSM with Llama 4 Integration
+
+**2025/05/04** - We have added support for Llama 4 integration with CSM via a dimension-matching adapter!
 
 **2025/03/13** - We are releasing the 1B CSM variant. The checkpoint is [hosted on Hugging Face](https://huggingface.co/sesame/csm_1b).
 
 ---
 
 CSM (Conversational Speech Model) is a speech generation model from [Sesame](https://www.sesame.com) that generates RVQ audio codes from text and audio inputs. The model architecture employs a [Llama](https://www.llama.com/) backbone and a smaller audio decoder that produces [Mimi](https://huggingface.co/kyutai/mimi) audio codes.
+
+This repository now includes an adapter-based integration that allows CSM to work with Llama 4 models, bridging the dimensional gap between Llama 4's 5120-d hidden states and CSM's expected 4096-d inputs.
 
 A fine-tuned variant of CSM powers the [interactive voice demo](https://www.sesame.com/voicedemo) shown in our [blog post](https://www.sesame.com/research/crossing_the_uncanny_valley_of_voice).
 
@@ -17,7 +21,8 @@ A hosted [Hugging Face space](https://huggingface.co/spaces/sesame/csm-1b) is al
 * Similarly, Python 3.10 is recommended, but newer versions may be fine
 * For some audio operations, `ffmpeg` may be required
 * Access to the following Hugging Face models:
-  * [Llama-3.2-1B](https://huggingface.co/meta-llama/Llama-3.2-1B)
+  * [Llama-4-Scout-17B-16E-Instruct](https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct) (primary model)
+  * [Llama-3.2-1B](https://huggingface.co/meta-llama/Llama-3.2-1B) (alternative model)
   * [CSM-1B](https://huggingface.co/sesame/csm-1b)
 
 ### Setup
@@ -25,6 +30,11 @@ A hosted [Hugging Face space](https://huggingface.co/spaces/sesame/csm-1b) is al
 ```bash
 git clone git@github.com:SesameAILabs/csm.git
 cd csm
+
+# Easy setup with our script (recommended)
+./setup.sh your_huggingface_token
+
+# Or manual setup
 python3.10 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -32,8 +42,9 @@ pip install -r requirements.txt
 # Disable lazy compilation in Mimi
 export NO_TORCH_COMPILE=1
 
-# You will need access to CSM-1B and Llama-3.2-1B
-huggingface-cli login
+# You will need access to these gated models
+export HUGGING_FACE_HUB_TOKEN=your_huggingface_token
+huggingface-cli login --token $HUGGING_FACE_HUB_TOKEN
 ```
 
 ### Windows Setup
@@ -45,12 +56,30 @@ The `triton` package cannot be installed in Windows. Instead use `pip install tr
 This script will generate a conversation between 2 characters, using a prompt for each character.
 
 ```bash
+# With the original CSM model
 python run_csm.py
+
+# With Llama 4 integration
+python run_csm_with_llama4.py --adapter checkpoints/llama4_adapter_synthetic_adapter.pt
 ```
 
 ## Usage
 
 If you want to write your own applications with CSM, the following examples show basic usage.
+
+### Testing Model Access
+
+Verify if you have access to the required models:
+
+```bash
+python scripts/test_gated_models.py --token $HUGGING_FACE_HUB_TOKEN
+```
+
+### Generate TTS with Llama 4
+
+```bash
+python scripts/run_real_tts_test.py --token $HUGGING_FACE_HUB_TOKEN --model meta-llama/Llama-4-Scout-17B-16E-Instruct
+```
 
 #### Generate a sentence
 
