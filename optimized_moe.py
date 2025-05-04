@@ -36,6 +36,11 @@ class VectorizedMoEGating(nn.Module):
         """
         # Get device from input
         device = x.device
+        dtype = x.dtype
+        
+        # Ensure router is on the same device as input
+        if self.router.weight.device != device:
+            self.router.to(device=device, dtype=dtype)
         
         # Compute router logits - [batch_size, seq_len, num_experts]
         batch_size, seq_len, _ = x.shape
@@ -70,6 +75,12 @@ class VectorizedMoEExpertLayer(nn.Module):
         self.up_proj = nn.Linear(input_dim, hidden_dim)
         self.act = nn.GELU()
         self.down_proj = nn.Linear(hidden_dim, output_dim)
+        
+        # Initialize weights for better performance
+        nn.init.xavier_uniform_(self.up_proj.weight)
+        nn.init.xavier_uniform_(self.down_proj.weight)
+        nn.init.zeros_(self.up_proj.bias)
+        nn.init.zeros_(self.down_proj.bias)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -81,6 +92,13 @@ class VectorizedMoEExpertLayer(nn.Module):
         Returns:
             Output tensor with same shape as input except last dim is output_dim
         """
+        # Ensure expert is on the same device as input
+        device = x.device
+        dtype = x.dtype
+        
+        if self.up_proj.weight.device != device:
+            self.to(device=device, dtype=dtype)
+            
         return self.down_proj(self.act(self.up_proj(x)))
 
 
@@ -124,6 +142,10 @@ class VectorizedMoELayer(nn.Module):
         """
         batch_size, seq_len, embed_dim = x.shape
         device = x.device
+        dtype = x.dtype
+        
+        # Ensure the whole module is on the same device as input
+        self.to(device=device, dtype=dtype)
         
         # Reshape for efficient processing
         # We'll process all token embeddings as a single batch
@@ -159,6 +181,10 @@ class VectorizedMoELayer(nn.Module):
             # Get all tokens that use this expert
             selected_tokens = x_flat[expert_mask]  # [num_tokens, embed_dim]
             
+            # Make sure expert is on the same device
+            if self.experts[expert_idx].up_proj.weight.device != device:
+                self.experts[expert_idx].to(device=device, dtype=dtype)
+                
             # Process all these tokens at once
             expert_output = self.experts[expert_idx](selected_tokens)  # [num_tokens, embed_dim]
             
@@ -167,7 +193,7 @@ class VectorizedMoELayer(nn.Module):
             token_positions = expert_mask.nonzero(as_tuple=True)[0]  # [num_tokens]
             
             # For each selected token, find which position (0...top_k-1) has this expert
-            token_routing_weights = torch.zeros(token_positions.size(0), device=device)
+            token_routing_weights = torch.zeros(token_positions.size(0), device=device, dtype=dtype)
             
             for k in range(self.top_k):
                 # Create mask for tokens where this expert is at position k
@@ -224,7 +250,8 @@ class OptimizedMoEBlockWrapper(nn.Module):
     """
     def __init__(self, original_block, hidden_dim, mlp_dim, num_experts=8, top_k=2):
         super().__init__()
-        self._original_block = original_block  # Use _original_block as internal attribute name
+        # Store the original block directly
+        self.original_block = original_block
         self.use_moe = True
         
         # Create MoE layer
@@ -256,7 +283,7 @@ class OptimizedMoEBlockWrapper(nn.Module):
             Output tensor
         """
         # Get intermediate representation after attention
-        h = self._original_block(x, *args, **kwargs)
+        h = self.original_block(x, *args, **kwargs)
         
         # Check if MoE is enabled
         if not self.use_moe:
@@ -279,25 +306,29 @@ class OptimizedMoEBlockWrapper(nn.Module):
         else:
             return moe_output
     
-    # Required methods for cache handling
+    # Cache handling methods
     def caches_are_enabled(self):
         """Check if caches are enabled in the original block."""
-        if hasattr(self._original_block, 'caches_are_enabled'):
-            return self._original_block.caches_are_enabled()
-        return False
+        return getattr(self.original_block, 'caches_are_enabled', lambda: False)()
     
-    def setup_caches(self, batch_size, max_seq_len, dtype=None):
+    def setup_caches(self, batch_size, max_seq_len=None, dtype=None):
         """Set up caches in the original block."""
-        if hasattr(self._original_block, 'setup_caches'):
-            self._original_block.setup_caches(batch_size, max_seq_len, dtype)
+        if hasattr(self.original_block, 'setup_caches'):
+            if max_seq_len is None:
+                # Handle different signature versions
+                self.original_block.setup_caches(batch_size, dtype)
+            else:
+                self.original_block.setup_caches(batch_size, max_seq_len, dtype)
     
     def reset_cache(self):
         """Reset cache in the original block."""
-        if hasattr(self._original_block, 'reset_cache'):
-            self._original_block.reset_cache()
-    
-    def __getattr__(self, name):
-        """Delegate attribute access to the original block."""
-        if name != '_original_block' and hasattr(self._original_block, name):
-            return getattr(self._original_block, name)
-        raise AttributeError(f"{self.__class__.__name__} has no attribute '{name}'")
+        if hasattr(self.original_block, 'reset_cache'):
+            self.original_block.reset_cache()
+            
+    def reset_caches(self):
+        """Reset caches in the original block (plural version)."""
+        if hasattr(self.original_block, 'reset_caches'):
+            self.original_block.reset_caches()
+        elif hasattr(self.original_block, 'reset_cache'):
+            self.original_block.reset_cache()
+

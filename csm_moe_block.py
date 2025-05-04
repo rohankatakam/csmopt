@@ -1,37 +1,40 @@
 """
 CSM MoE Block implementation that integrates with the existing CSM architecture.
 
-This module provides the integration between the CSM model and our MoE routing mechanism.
+This module provides the integration between the CSM model and our optimized vectorized MoE 
+routing mechanism that improves memory usage and performance.
 It allows for seamless insertion of MoE blocks into the CSM decoder pipeline.
 """
 
 import torch
 import torch.nn as nn
 from typing import Dict, List, Tuple, Optional, Union
+import time
 
 from models import Model, ModelArgs
-from moe_router import patch_llama_with_moe
+from optimized_moe import OptimizedMoEBlockWrapper, VectorizedMoELayer
 
 
 class CSMMoEModel(nn.Module):
     """
-    Wrapper for CSM model that adds MoE routing capabilities to selected decoder blocks.
+    Wrapper for CSM model that adds vectorized MoE routing capabilities to selected decoder blocks.
+    This implementation optimizes for memory usage and performance.
     """
     def __init__(self, 
                  original_model: Model,
                  moe_block_indices: List[int] = None,
                  num_experts: int = 8,
-                 k: int = 2,
-                 router_z_loss_coef: float = 0.001):
+                 top_k: int = 2,
+                 use_vectorized: bool = True):
         """
-        Initialize the CSM MoE model.
+        Initialize the CSM MoE model with vectorized implementation.
         
         Args:
             original_model: Original CSM model to wrap
             moe_block_indices: Indices of decoder blocks to convert to MoE (None means no MoE)
             num_experts: Number of experts in each MoE layer
-            k: Number of experts to route to
-            router_z_loss_coef: Coefficient for router z-loss
+            top_k: Number of experts to route to
+            use_vectorized: Whether to use the vectorized implementation
         """
         super().__init__()
         self.original_model = original_model
@@ -40,12 +43,11 @@ class CSMMoEModel(nn.Module):
         # Default to no MoE blocks
         self.moe_block_indices = moe_block_indices or []
         self.num_experts = num_experts
-        self.k = k
-        self.router_z_loss_coef = router_z_loss_coef
+        self.top_k = top_k
+        self.use_vectorized = use_vectorized
         
-        # Variables to track MoE blocks and their losses
+        # Variables to track MoE blocks
         self.moe_blocks = {}
-        self.last_aux_loss = 0.0
         
         # Add MoE to specified decoder blocks
         if len(self.moe_block_indices) > 0:
@@ -63,16 +65,55 @@ class CSMMoEModel(nn.Module):
                     embed_dim = 1024
                     mlp_dim = 4096
                 
-                # Apply MoE patches
-                self.original_model, self.moe_blocks = patch_llama_with_moe(
-                    model=self.original_model,
-                    block_indices=self.moe_block_indices,
+                # Apply vectorized MoE to specified decoder blocks
+                self.moe_blocks = self.patch_llama_with_vectorized_moe(
                     embed_dim=embed_dim,
-                    mlp_dim=mlp_dim,
-                    num_experts=self.num_experts,
-                    k=self.k
+                    mlp_dim=mlp_dim
                 )
 
+    def patch_llama_with_vectorized_moe(self, embed_dim, mlp_dim):
+        """
+        Apply vectorized MoE to the specified decoder blocks.
+        
+        Args:
+            embed_dim: Embedding dimension
+            mlp_dim: MLP dimension
+            
+        Returns:
+            moe_blocks: Dictionary of MoE blocks for monitoring
+        """
+        moe_blocks = {}
+        
+        # Get decoder layers
+        decoder = self.original_model.decoder
+        
+        # Track replacement time for performance benchmarking
+        start_time = time.time()
+        
+        # Wrap specified blocks with Vectorized MoE
+        for idx in self.moe_block_indices:
+            # Check if the index is valid
+            if hasattr(decoder, 'layers') and idx < len(decoder.layers):
+                original_block = decoder.layers[idx]
+                
+                # Create optimized MoE block wrapper
+                moe_block = OptimizedMoEBlockWrapper(
+                    original_block=original_block,
+                    hidden_dim=embed_dim,
+                    mlp_dim=mlp_dim,
+                    num_experts=self.num_experts,
+                    top_k=self.top_k
+                )
+                
+                # Replace the original block
+                decoder.layers[idx] = moe_block
+                moe_blocks[f"decoder_block_{idx}"] = moe_block
+        
+        elapsed = time.time() - start_time
+        print(f"Patched {len(self.moe_block_indices)} decoder blocks with vectorized MoE in {elapsed:.2f}s")
+        
+        return moe_blocks
+    
     def forward(self, *args, **kwargs):
         """
         Forward pass through the MoE-augmented CSM model.
@@ -87,7 +128,7 @@ class CSMMoEModel(nn.Module):
 
     def generate_frame(self, *args, **kwargs):
         """
-        Generate a frame with the MoE-augmented model, capturing auxiliary losses.
+        Generate a frame with the MoE-augmented model.
         
         Args:
             *args, **kwargs: Arguments to pass to the original model's generate_frame
@@ -95,13 +136,8 @@ class CSMMoEModel(nn.Module):
         Returns:
             output: Output from generate_frame
         """
-        # The original method is patched, so aux losses will be computed during
-        # the forward pass through MoE blocks
+        # Vectorized implementation handles activation tracking internally
         output = self.original_model.generate_frame(*args, **kwargs)
-        
-        # Reset auxiliary loss for the next frame
-        self.last_aux_loss = 0.0
-        
         return output
     
     def setup_caches(self, *args, **kwargs):
@@ -127,62 +163,63 @@ class CSMMoEModel(nn.Module):
         for block_name, moe_block in self.moe_blocks.items():
             moe_block.use_moe = enable
     
-    def get_expert_usage_stats(self) -> Dict[str, torch.Tensor]:
+    def get_expert_usage_stats(self) -> Dict[str, Dict]:
         """
-        Get statistics about expert usage.
+        Get detailed statistics about expert usage for all MoE blocks.
         
         Returns:
-            stats: Dictionary of expert usage statistics
+            stats: Dictionary of expert usage statistics for each MoE block
         """
         stats = {}
         for block_name, moe_block in self.moe_blocks.items():
-            expert_counts = moe_block.moe_layer.get_expert_activations()
-            stats[f"{block_name}_expert_counts"] = expert_counts
+            stats[block_name] = moe_block.moe.get_expert_usage_stats()
         return stats
 
 
-# Monkey-patch the Model.generate_frame method to handle MoE blocks and their auxiliary losses
+# Monkey-patch the Model.generate_frame method to handle vectorized MoE blocks
 original_generate_frame = Model.generate_frame
 
-def generate_frame_with_moe_support(self, *args, **kwargs):
+def generate_frame_with_vectorized_moe_support(self, *args, **kwargs):
     """
-    Patched generate_frame method that handles MoE auxiliary losses.
+    Patched generate_frame method that supports vectorized MoE operations.
     """
     # Check if this is an MoE model
     if hasattr(self, 'moe_blocks') and self.moe_blocks:
-        # Process through MoE blocks, which will return (output, aux_loss)
+        # Process through vectorized MoE blocks
         output = original_generate_frame(self, *args, **kwargs)
-        # The aux_loss is tracked internally in CSMMoEModel
         return output
     else:
         # Original method for non-MoE models
         return original_generate_frame(self, *args, **kwargs)
 
 # Apply the monkey patch
-Model.generate_frame = generate_frame_with_moe_support
+Model.generate_frame = generate_frame_with_vectorized_moe_support
 
 
 def create_moe_csm_model(
     original_model: Model,
     moe_block_indices: List[int] = None,
     num_experts: int = 8,
-    k: int = 2
+    top_k: int = 2,
+    use_vectorized: bool = True
 ) -> CSMMoEModel:
     """
-    Create a CSM model with MoE routing.
+    Create a CSM model with vectorized MoE routing.
     
     Args:
         original_model: Original CSM model
         moe_block_indices: Indices of decoder blocks to convert to MoE
         num_experts: Number of experts
-        k: Number of experts to route to
+        top_k: Number of experts to route to
+        use_vectorized: Whether to use the vectorized implementation
         
     Returns:
-        moe_model: CSM model with MoE routing
+        moe_model: CSM model with vectorized MoE routing
     """
     return CSMMoEModel(
         original_model=original_model,
         moe_block_indices=moe_block_indices,
         num_experts=num_experts,
-        k=k
+        top_k=top_k,
+        use_vectorized=use_vectorized
     )

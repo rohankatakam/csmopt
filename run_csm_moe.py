@@ -1,8 +1,9 @@
 """
-Test script for running CSM with MoE routing.
+Test script for running CSM with optimized vectorized MoE routing.
 
-This script demonstrates how to use the MoE routing mechanism
-with the CSM model for inference on a local .wav file.
+This script demonstrates how to use the optimized vectorized MoE routing mechanism
+with the CSM model for inference on a local .wav file. This implementation
+focuses on memory efficiency and performance improvement.
 """
 
 import os
@@ -68,7 +69,7 @@ def prepare_prompt(text: str, speaker: int, audio_path: str, sample_rate: int) -
 
 def main():
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Run CSM with MoE routing")
+    parser = argparse.ArgumentParser(description="Run CSM with optimized vectorized MoE routing")
     parser.add_argument("--moe_blocks", type=str, default="0,1", 
                         help="Comma-separated list of decoder block indices to apply MoE (default: 0,1)")
     parser.add_argument("--num_experts", type=int, default=8,
@@ -79,6 +80,8 @@ def main():
                         help="Disable MoE routing for comparison")
     parser.add_argument("--benchmark", action="store_true",
                         help="Run in benchmark mode to compare performance")
+    parser.add_argument("--memory_profile", action="store_true",
+                        help="Track memory usage during generation")
     parser.add_argument("--output", type=str, default="moe_conversation.wav",
                         help="Output wav file name (default: moe_conversation.wav)")
     args = parser.parse_args()
@@ -94,16 +97,17 @@ def main():
     print("Loading base CSM model...")
     base_generator = load_csm_1b(device)
     
-    # Create MoE version
-    print("Setting up MoE routing...")
+    # Create optimized vectorized MoE version
+    print("Setting up optimized vectorized MoE routing...")
     moe_block_indices = [int(idx) for idx in args.moe_blocks.split(",")]
-    print(f"Applying MoE to decoder blocks: {moe_block_indices}")
+    print(f"Applying vectorized MoE to decoder blocks: {moe_block_indices}")
     
     moe_model = create_moe_csm_model(
         original_model=base_generator._model,
         moe_block_indices=moe_block_indices,
         num_experts=args.num_experts,
-        k=args.top_k
+        top_k=args.top_k,
+        use_vectorized=True
     )
     
     # Replace the model in the generator
@@ -111,10 +115,17 @@ def main():
     
     # Disable MoE if requested
     if args.disable_moe:
-        print("MoE routing disabled for comparative testing")
+        print("Vectorized MoE routing disabled for comparative testing")
         moe_model.enable_moe(False)
     else:
-        print(f"MoE routing enabled with {args.num_experts} experts, top-{args.top_k} gating")
+        print(f"Vectorized MoE routing enabled with {args.num_experts} experts, top-{args.top_k} gating")
+        
+    # Setup memory tracking if requested
+    if args.memory_profile and torch.cuda.is_available():
+        print("Memory profiling enabled")
+        torch.cuda.reset_peak_memory_stats()
+        initial_mem = torch.cuda.memory_allocated() / (1024 * 1024)  # MB
+        print(f"Initial CUDA memory usage: {initial_mem:.2f} MB")
 
     # Prepare prompts
     prompt_a = prepare_prompt(
@@ -170,12 +181,17 @@ def main():
             generated_segments = []
             base_generator._model.reset_caches()
             
-            # Now enable MoE
+            # Now enable vectorized MoE
             moe_model.enable_moe(True)
-            print("\nBenchmarking with MoE enabled:")
+            print("\nBenchmarking with vectorized MoE enabled:")
         
         # Run with current MoE settings
         start_time = time.time()
+        
+        if args.memory_profile and torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+            pre_gen_mem = torch.cuda.memory_allocated() / (1024 * 1024)  # MB
+        
         for utterance in conversation:
             print(f"Generating: {utterance['text']}")
             audio_tensor = base_generator.generate(
@@ -187,11 +203,17 @@ def main():
             generated_segments.append(Segment(text=utterance['text'], speaker=utterance['speaker_id'], audio=audio_tensor))
         
         elapsed_moe = time.time() - start_time
-        print(f"Time with MoE: {elapsed_moe:.2f} seconds")
+        print(f"Time with vectorized MoE: {elapsed_moe:.2f} seconds")
+        
+        if args.memory_profile and torch.cuda.is_available():
+            peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024)  # MB
+            current_mem = torch.cuda.memory_allocated() / (1024 * 1024)  # MB
+            print(f"Memory usage - Peak: {peak_mem:.2f} MB, Current: {current_mem:.2f} MB")
+            print(f"Memory increase during generation: {current_mem - pre_gen_mem:.2f} MB")
         
         if not args.disable_moe:
             speedup = (elapsed_no_moe / elapsed_moe - 1) * 100
-            print(f"MoE speedup: {speedup:.2f}%")
+            print(f"Vectorized MoE speedup: {speedup:.2f}%")
     else:
         # Regular generation mode
         for utterance in conversation:
@@ -215,10 +237,20 @@ def main():
     
     # Print expert statistics if MoE is enabled
     if not args.disable_moe and hasattr(moe_model, 'get_expert_usage_stats'):
-        print("\nExpert usage statistics:")
+        print("\nVectorized MoE expert usage statistics:")
         stats = moe_model.get_expert_usage_stats()
-        for block_name, counts in stats.items():
-            print(f"{block_name}: {counts.tolist()}")
+        for block_name, block_stats in stats.items():
+            print(f"\n{block_name}:")
+            print(f"  Expert activations: {block_stats.get('expert_activations', [])}")
+            print(f"  Expert percentages: {[f'{p:.2f}%' for p in block_stats.get('expert_percentages', [])]}")
+            print(f"  Total tokens processed: {block_stats.get('total_tokens_processed', 0)}")
+            
+        # Show memory usage summary at the end if profiling is enabled
+        if args.memory_profile and torch.cuda.is_available():
+            print("\nMemory Usage Summary:")
+            print(f"Final CUDA memory: {torch.cuda.memory_allocated() / (1024 * 1024):.2f} MB")
+            print(f"Peak CUDA memory: {torch.cuda.max_memory_allocated() / (1024 * 1024):.2f} MB")
+            torch.cuda.empty_cache()  # Clean up memory at the end
 
 if __name__ == "__main__":
     main()
