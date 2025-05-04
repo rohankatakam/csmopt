@@ -1,9 +1,34 @@
-torch==2.4.0
-torchaudio==2.4.0
-tokenizers==0.21.0
-transformers==4.49.0
-huggingface_hub==0.28.1
-moshi==0.2.2
-torchtune==0.4.0
-torchao==0.9.0
-silentcipher @ git+https://github.com/SesameAILabs/silentcipher@master
+# Core ML libraries
+torch==2.1.0
+torchvision==0.16.0
+torchaudio==2.1.0
+
+# Hugging Face ecosystem
+transformers==4.38.0
+tokenizers==0.15.2
+huggingface_hub==0.19.3
+safetensors==0.4.1
+sentencepiece==0.2.0
+
+# Quantization and optimization
+bitsandbytes==0.41.0
+accelerate==0.27.0
+triton==2.1.0
+
+# Training utilities
+pytorch-lightning==2.1.0
+tqdm==4.66.1
+matplotlib==3.8.0
+pandas==2.1.1
+tensorboard==2.15.0
+
+# Optional dependencies for audio processing
+numpy==1.24.3
+ffmpeg-python==0.2.0
+
+# Project-specific dependencies
+# Uncomment if needed for your specific project
+# moshi==0.2.2
+# torchtune==0.4.0
+# torchao==0.9.0
+# silentcipher @ git+https://github.com/SesameAILabs/silentcipher@master

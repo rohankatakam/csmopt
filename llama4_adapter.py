@@ -5,11 +5,11 @@ from typing import Dict, Any, Optional
 
 class Llama4Adapter(nn.Module):
     """
-    Adapter to transform Llama 4's 8192-d hidden states to 
+    Adapter to transform Llama 4's 5120-d hidden states to 
     match Sesame CSM's expected 4096-d input format.
     """
     def __init__(self, 
-                 input_dim: int = 8192, 
+                 input_dim: int = 5120, 
                  output_dim: int = 4096, 
                  hidden_dim: Optional[int] = None):
         super().__init__()
